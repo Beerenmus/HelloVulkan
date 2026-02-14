@@ -27,6 +27,7 @@ VkFormat swapChainImageFormat = VK_FORMAT_B8G8R8A8_UNORM;
 SDL_Window* window;
 
 VkInstance instance;
+VkDebugUtilsMessengerEXT debugUtilsMessenger;
 VkSurfaceKHR surface;
 VkPhysicalDevice physicalDevice;
 VkDevice device;
@@ -46,10 +47,40 @@ std::vector<VkFence> inFlightFences;
 
 uint32_t MAX_IMAGE_SIZE = 2;
 
-void createInstance() {
+VkResult createDebugUtilsMessengerEXT(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDebugUtilsMessengerEXT* pDebugMessenger) {
+    auto func = (PFN_vkCreateDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
+    if (func != nullptr) {
+        return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
+    } else {
+        return VK_ERROR_EXTENSION_NOT_PRESENT;
+    }
+}
 
+void destroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT messenger, const VkAllocationCallbacks* pAllocator) {
+    auto func = (PFN_vkDestroyDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
+    if (func != nullptr) {
+        func(instance, messenger, pAllocator);
+    } else {
+        std::cout << "vkDestroyDebugUtilsMessengerEXT konnte nicht ausgeführt werden" << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+}
+
+VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) {
+    std::cerr << "Validation layer: " << pCallbackData->pMessage << std::endl;
+    return VK_FALSE;
+}
+
+void createInstance() {
     uint32_t extensionCount = 0;
     const char* const* extensions = SDL_Vulkan_GetInstanceExtensions(&extensionCount);
+
+    std::vector<const char*> extensionList {};
+    extensionList.push_back("VK_EXT_debug_utils");
+
+    for (uint32_t x=0;x<extensionCount; x++) {
+        extensionList.push_back(extensions[x]);
+    }
 
     VkApplicationInfo appInfo{};
     appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -59,11 +90,25 @@ void createInstance() {
     appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
     appInfo.apiVersion = VK_API_VERSION_1_0;
 
+    VkDebugUtilsMessengerCreateInfoEXT debugUtilsMessengerCreateInfo;
+    debugUtilsMessengerCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    debugUtilsMessengerCreateInfo.pNext = nullptr;
+    debugUtilsMessengerCreateInfo.flags = 0;
+    debugUtilsMessengerCreateInfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    debugUtilsMessengerCreateInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
+    debugUtilsMessengerCreateInfo.pfnUserCallback = &debugCallback;
+    debugUtilsMessengerCreateInfo.pUserData = nullptr;
+
     VkInstanceCreateInfo instanceCreateInfo {};
     instanceCreateInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    instanceCreateInfo.flags = 0;
+
+    if (enableValidationLayers) {
+        instanceCreateInfo.pNext = &debugUtilsMessengerCreateInfo;
+    }
     instanceCreateInfo.pApplicationInfo = &appInfo;
-    instanceCreateInfo.enabledExtensionCount = extensionCount;
-    instanceCreateInfo.ppEnabledExtensionNames = extensions;
+    instanceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(extensionList.size());
+    instanceCreateInfo.ppEnabledExtensionNames = extensionList.data();
 
     if (enableValidationLayers) {
         instanceCreateInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
@@ -77,6 +122,8 @@ void createInstance() {
         std::cout << "Vulkan Instanz konnte nicht erstellt werden!" << std::endl;
         exit(EXIT_FAILURE);
     }
+
+    createDebugUtilsMessengerEXT(instance, &debugUtilsMessengerCreateInfo, nullptr, &debugUtilsMessenger);
 }
 
 void createSurface() {
@@ -100,7 +147,7 @@ void pickPhysicalDevice() {
     std::vector<VkPhysicalDevice> devices(deviceCount);
     vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
 
-    physicalDevice = devices[1];
+    physicalDevice = devices[0];
 
     VkPhysicalDeviceProperties deviceProperties;
     vkGetPhysicalDeviceProperties(physicalDevice, &deviceProperties);
