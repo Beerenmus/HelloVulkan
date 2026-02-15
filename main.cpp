@@ -35,8 +35,6 @@ VkQueue graphicsQueue;
 VkSwapchainKHR swapchain;
 std::vector<VkImage> swapChainImages;
 std::vector<VkImageView> swapChainImageViews;
-VkRenderPass renderPass;
-std::vector<VkFramebuffer> framebuffers;
 VkPipelineLayout pipelineLayout;
 VkPipeline graphicsPipeline;
 VkCommandPool commandPool;
@@ -66,9 +64,53 @@ void destroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT
     }
 }
 
+void vkCmdBeginRenderingKHR(VkCommandBuffer commandBuffer, VkRenderingInfo *pRenderingInfo) {
+    auto func = (PFN_vkCmdBeginRenderingKHR) vkGetInstanceProcAddr(instance, "vkCmdBeginRenderingKHR");
+    if (func != nullptr) {
+        func(commandBuffer, pRenderingInfo);
+    } else {
+        std::cout << "vkCmdBeginRenderingKHR konnte nicht ausgeführt werden" << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+}
+
+void vkCmdEndRenderingKHR(VkCommandBuffer commandBuffer) {
+    auto func = (PFN_vkCmdEndRendering) vkGetInstanceProcAddr(instance, "vkCmdEndRenderingKHR");
+    if (func != nullptr) {
+        func(commandBuffer);
+    } else {
+        std::cout << "vkCmdEndRendering konnte nicht ausgeführt werden" << std::endl;
+        std::exit(EXIT_FAILURE);
+    }
+}
+
 VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity, VkDebugUtilsMessageTypeFlagsEXT messageType, const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData, void* pUserData) {
     std::cerr << "Validation layer: " << pCallbackData->pMessage << std::endl;
     return VK_FALSE;
+}
+
+void imageLayoutTransition(VkCommandBuffer commandBuffer, VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask, VkAccessFlags srcAccessMask, VkAccessFlags dstAccessMask,  VkImageLayout oldLayout, VkImageLayout newLayout, VkImage image) {
+
+    VkImageSubresourceRange imageSubresourceRange {};
+    imageSubresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    imageSubresourceRange.baseMipLevel = 0;
+    imageSubresourceRange.levelCount = 1;
+    imageSubresourceRange.baseArrayLayer = 0;
+    imageSubresourceRange.layerCount = 1;
+
+    std::array<VkImageMemoryBarrier, 1> imageMemoryBarriers {};
+    imageMemoryBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    imageMemoryBarriers[0].pNext = nullptr;
+    imageMemoryBarriers[0].srcAccessMask = srcAccessMask;
+    imageMemoryBarriers[0].dstAccessMask = dstAccessMask;
+    imageMemoryBarriers[0].oldLayout = oldLayout;
+    imageMemoryBarriers[0].newLayout = newLayout;
+    imageMemoryBarriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    imageMemoryBarriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    imageMemoryBarriers[0].image = image;
+    imageMemoryBarriers[0].subresourceRange = imageSubresourceRange;
+
+    vkCmdPipelineBarrier(commandBuffer, srcStageMask, dstStageMask, VK_DEPENDENCY_BY_REGION_BIT, 0, nullptr, 0, nullptr, static_cast<uint32_t>(imageMemoryBarriers.size()), imageMemoryBarriers.data());
 }
 
 void createInstance() {
@@ -88,7 +130,7 @@ void createInstance() {
     appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
     appInfo.pEngineName = "No Engine";
     appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-    appInfo.apiVersion = VK_API_VERSION_1_0;
+    appInfo.apiVersion = VK_API_VERSION_1_2;
 
     VkDebugUtilsMessengerCreateInfoEXT debugUtilsMessengerCreateInfo;
     debugUtilsMessengerCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
@@ -157,8 +199,14 @@ void pickPhysicalDevice() {
 void createDevice() {
 
     const std::vector<const char*> deviceExtensions = {
-        VK_KHR_SWAPCHAIN_EXTENSION_NAME
+        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+        VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME
     };
+
+    VkPhysicalDeviceDynamicRenderingFeaturesKHR dynamicRenderingFeatures = {};
+    dynamicRenderingFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
+    dynamicRenderingFeatures.pNext = nullptr;
+    dynamicRenderingFeatures.dynamicRendering = VK_TRUE;
 
     uint32_t queueFamilyCount = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
@@ -181,6 +229,7 @@ void createDevice() {
     float queuePriority = 1.0f;
     VkDeviceQueueCreateInfo queueCreateInfo {};
     queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    queueCreateInfo.pNext = nullptr;
     queueCreateInfo.queueFamilyIndex = graphicsFamily;
     queueCreateInfo.queueCount = 1;
     queueCreateInfo.pQueuePriorities = &queuePriority;
@@ -189,6 +238,7 @@ void createDevice() {
 
     VkDeviceCreateInfo deviceCreateInfo {};
     deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    deviceCreateInfo.pNext = &dynamicRenderingFeatures;
     deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo;
     deviceCreateInfo.queueCreateInfoCount = 1;
     deviceCreateInfo.pEnabledFeatures = &deviceFeatures;
@@ -257,89 +307,6 @@ void createImageViews() {
 
         if (vkCreateImageView(device, &imageViewCreateInfo, nullptr, &swapChainImageViews[i]) != VK_SUCCESS) {
             std::cerr << "Image View konnte nicht erstellt werden!" << std::endl;
-            exit(EXIT_FAILURE);
-        }
-    }
-}
-
-void createRenderPass() {
-
-    std::array<VkAttachmentReference, 1> attachmentReferences = {};
-    attachmentReferences[0].attachment = 0;
-    attachmentReferences[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-    std::array<VkAttachmentDescription, 1> attachmentDescription {};
-
-    attachmentDescription[0].flags = 0;
-    attachmentDescription[0].format = swapChainImageFormat;
-    attachmentDescription[0].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachmentDescription[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachmentDescription[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    attachmentDescription[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachmentDescription[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachmentDescription[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachmentDescription[0].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-
-    std::array<VkSubpassDescription, 1> subpassDescription {};
-
-    subpassDescription[0].flags = 0;
-    subpassDescription[0].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpassDescription[0].inputAttachmentCount = 0;
-    subpassDescription[0].pInputAttachments = nullptr;
-    subpassDescription[0].colorAttachmentCount = static_cast<uint32_t>(attachmentReferences.size());
-    subpassDescription[0].pColorAttachments = attachmentReferences.data();
-    subpassDescription[0].pResolveAttachments = nullptr;
-    subpassDescription[0].pDepthStencilAttachment = nullptr;
-    subpassDescription[0].preserveAttachmentCount = 0;
-    subpassDescription[0].pPreserveAttachments = nullptr;
-
-    std::array<VkSubpassDependency, 1> subpassDependencies {};
-    subpassDependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-    subpassDependencies[0].dstSubpass = 0;
-    subpassDependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    subpassDependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    subpassDependencies[0].srcAccessMask = 0;
-    subpassDependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-    VkRenderPassCreateInfo renderPassCreateInfo = {};
-    renderPassCreateInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    renderPassCreateInfo.pNext = nullptr;
-    renderPassCreateInfo.flags = 0;
-    renderPassCreateInfo.attachmentCount = static_cast<uint32_t>(attachmentDescription.size());
-    renderPassCreateInfo.pAttachments = attachmentDescription.data();
-    renderPassCreateInfo.subpassCount = static_cast<u_int32_t>(subpassDescription.size());
-    renderPassCreateInfo.pSubpasses = subpassDescription.data();
-    renderPassCreateInfo.dependencyCount = static_cast<uint32_t>(subpassDependencies.size());
-    renderPassCreateInfo.pDependencies = subpassDependencies.data();
-
-    const VkResult result = vkCreateRenderPass(device, &renderPassCreateInfo, nullptr, &renderPass);
-    if (result != VK_SUCCESS) {
-        std::cout << "RenderPass konnte nicht erstellt werden!" << std::endl;
-        exit(EXIT_FAILURE);
-    }
-}
-
-void createFramebuffers() {
-
-    framebuffers.resize(swapChainImageViews.size());
-
-    for (size_t i = 0; i < swapChainImageViews.size(); i++) {
-
-        VkImageView attachments[] = {
-            swapChainImageViews[i]
-        };
-
-        VkFramebufferCreateInfo framebufferInfo {};
-        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        framebufferInfo.renderPass = renderPass;
-        framebufferInfo.attachmentCount = 1;
-        framebufferInfo.pAttachments = attachments;
-        framebufferInfo.width = width;
-        framebufferInfo.height = height;
-        framebufferInfo.layers = 1;
-
-        if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &framebuffers[i]) != VK_SUCCESS) {
-            std::cerr << "Framebuffer konnte nicht erstellt werden!" << std::endl;
             exit(EXIT_FAILURE);
         }
     }
@@ -470,9 +437,21 @@ void createGraphicsPipeline() {
     colorBlending.attachmentCount = 1;
     colorBlending.pAttachments = &colorBlendAttachment;
 
+    std::array<VkFormat, 1> formats {};
+    formats[0] = VK_FORMAT_B8G8R8A8_UNORM;
+
+    VkPipelineRenderingCreateInfoKHR pipelineRenderingCreateInfo {};
+    pipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
+    pipelineRenderingCreateInfo.pNext = nullptr;
+    pipelineRenderingCreateInfo.viewMask = 0;
+    pipelineRenderingCreateInfo.colorAttachmentCount = static_cast<uint32_t>(formats.size());
+    pipelineRenderingCreateInfo.pColorAttachmentFormats = formats.data();
+    pipelineRenderingCreateInfo.depthAttachmentFormat = VK_FORMAT_UNDEFINED;
+    pipelineRenderingCreateInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+
     VkGraphicsPipelineCreateInfo graphicsPipelineCreateInfo {};
     graphicsPipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    graphicsPipelineCreateInfo.pNext = nullptr;
+    graphicsPipelineCreateInfo.pNext = &pipelineRenderingCreateInfo;
     graphicsPipelineCreateInfo.stageCount = 2;
     graphicsPipelineCreateInfo.pStages = shaderStages;
     graphicsPipelineCreateInfo.pVertexInputState = &vertexInputInfo;
@@ -482,7 +461,7 @@ void createGraphicsPipeline() {
     graphicsPipelineCreateInfo.pMultisampleState = &multisampling;
     graphicsPipelineCreateInfo.pColorBlendState = &colorBlending;
     graphicsPipelineCreateInfo.layout = pipelineLayout;
-    graphicsPipelineCreateInfo.renderPass = renderPass;
+    graphicsPipelineCreateInfo.renderPass = VK_NULL_HANDLE;
     graphicsPipelineCreateInfo.subpass = 0;
 
     if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &graphicsPipelineCreateInfo, nullptr, &graphicsPipeline) != VK_SUCCESS) {
@@ -510,7 +489,7 @@ void createCommandPool() {
 
 void createCommandBuffers() {
 
-    commandBuffers.resize(framebuffers.size());
+    commandBuffers.resize(swapChainImageViews.size());
 
     VkCommandBufferAllocateInfo commandBufferAllocateInfo {};
     commandBufferAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -534,21 +513,43 @@ void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
         exit(EXIT_FAILURE);
     }
 
-    VkRenderPassBeginInfo renderPassBeginInfo {};
-    renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    renderPassBeginInfo.renderPass = renderPass;
-    renderPassBeginInfo.framebuffer = framebuffers[imageIndex];
-    renderPassBeginInfo.renderArea.offset = {0, 0};
-    renderPassBeginInfo.renderArea.extent = {width, height};
+    imageLayoutTransition(commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_NONE, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, swapChainImages.at(imageIndex));
 
     constexpr VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
-    renderPassBeginInfo.clearValueCount = 1;
-    renderPassBeginInfo.pClearValues = &clearColor;
 
-    vkCmdBeginRenderPass(commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+    VkRenderingAttachmentInfo renderingAttachmentInfo {};
+    renderingAttachmentInfo.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    renderingAttachmentInfo.pNext = nullptr;
+    renderingAttachmentInfo.imageView = swapChainImageViews[imageIndex];
+    renderingAttachmentInfo.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    renderingAttachmentInfo.resolveMode = VK_RESOLVE_MODE_NONE;
+    renderingAttachmentInfo.resolveImageView = VK_NULL_HANDLE;
+    renderingAttachmentInfo.resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    renderingAttachmentInfo.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    renderingAttachmentInfo.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    renderingAttachmentInfo.clearValue = clearColor;
+
+    VkRenderingInfoKHR renderingInfo {};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
+    renderingInfo.pNext = nullptr;
+    renderingInfo.flags = 0;
+    renderingInfo.renderArea.extent.width = width;
+    renderingInfo.renderArea.extent.height = height;
+    renderingInfo.renderArea.offset.x = 0;
+    renderingInfo.renderArea.offset.y = 0;
+    renderingInfo.layerCount = 1;
+    renderingInfo.viewMask = 0;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments = &renderingAttachmentInfo;
+    renderingInfo.pDepthAttachment = nullptr;
+    renderingInfo.pStencilAttachment = nullptr;
+
+    vkCmdBeginRenderingKHR(commandBuffer, &renderingInfo);
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);
-    vkCmdEndRenderPass(commandBuffer);
+    vkCmdEndRenderingKHR(commandBuffer);
+
+    imageLayoutTransition(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, swapChainImages.at(imageIndex));
 
     if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
         std::cerr << "Command Buffer konnte nicht aufgezeichnet werden!" << std::endl;
@@ -641,12 +642,6 @@ void cleanup() {
     vkDestroyPipeline(device, graphicsPipeline, nullptr);
     vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 
-    for (auto framebuffer : framebuffers) {
-        vkDestroyFramebuffer(device, framebuffer, nullptr);
-    }
-
-    vkDestroyRenderPass(device, renderPass, nullptr);
-
     for (auto imageView : swapChainImageViews) {
         vkDestroyImageView(device, imageView, nullptr);
     }
@@ -654,6 +649,8 @@ void cleanup() {
 
     vkDestroyDevice(device, nullptr);
     vkDestroySurfaceKHR(instance, surface, nullptr);
+
+    destroyDebugUtilsMessengerEXT(instance, debugUtilsMessenger, nullptr);
     vkDestroyInstance(instance, nullptr);
 }
 
@@ -687,8 +684,6 @@ int main(int argc, char* argv[]) {
     createDevice();
     createSwapchain();
     createImageViews();
-    createRenderPass();
-    createFramebuffers();
     createPipelineLayout();
     createGraphicsPipeline();
     createCommandPool();
